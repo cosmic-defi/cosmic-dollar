@@ -9,7 +9,6 @@ import {ICurve} from './curve/Curve.sol';
 import {IOracle} from './interfaces/IOracle.sol';
 import {IBoardroom} from './interfaces/IBoardroom.sol';
 import {IBasisAsset} from './interfaces/IBasisAsset.sol';
-import {ISimpleERCFund} from './interfaces/ISimpleERCFund.sol';
 import {Babylonian} from './lib/Babylonian.sol';
 import {FixedPoint} from './lib/FixedPoint.sol';
 import {Safe112} from './lib/Safe112.sol';
@@ -36,7 +35,6 @@ contract Treasury is ContractGuard, Epoch {
     bool public initialized = false;
 
     // ========== CORE
-    address public fund;
     address public cash;
     address public bond;
     address public share;
@@ -53,7 +51,6 @@ contract Treasury is ContractGuard, Epoch {
     uint256 public cashConversionLimit = 0;
     uint256 public accumulatedSeigniorage = 0;
     uint256 public accumulatedCashConversion = 0;
-    uint256 public fundAllocationRate = 2; // %
 
     /* ========== CONSTRUCTOR ========== */
 
@@ -64,7 +61,6 @@ contract Treasury is ContractGuard, Epoch {
         address _bondOracle,
         address _seigniorageOracle,
         address _boardroom,
-        address _fund,
         address _curve,
         uint256 _startTime
     ) public Epoch(1 days, _startTime, 0) {
@@ -76,7 +72,6 @@ contract Treasury is ContractGuard, Epoch {
         seigniorageOracle = _seigniorageOracle;
 
         boardroom = _boardroom;
-        fund = _fund;
 
         cashPriceOne = 10**18;
     }
@@ -174,18 +169,7 @@ contract Treasury is ContractGuard, Epoch {
         emit Migration(target);
     }
 
-    // FUND
-    function setFund(address newFund) public onlyOperator {
-        address oldFund = fund;
-        fund = newFund;
-        emit ContributionPoolChanged(msg.sender, oldFund, newFund);
-    }
-
-    function setFundAllocationRate(uint256 newRate) public onlyOperator {
-        uint256 oldRate = fundAllocationRate;
-        fundAllocationRate = newRate;
-        emit ContributionPoolRateChanged(msg.sender, oldRate, newRate);
-    }
+    
 
     // ORACLE
     function setBondOracle(address newOracle) public onlyOperator {
@@ -315,40 +299,10 @@ contract Treasury is ContractGuard, Epoch {
         uint256 seigniorage = circulatingSupply().mul(percentage).div(1e18);
         IBasisAsset(cash).mint(address(this), seigniorage);
 
-        // ======================== BIP-3
-        uint256 fundReserve = seigniorage.mul(fundAllocationRate).div(100);
-        if (fundReserve > 0) {
-            IERC20(cash).safeApprove(fund, fundReserve);
-            ISimpleERCFund(fund).deposit(
-                cash,
-                fundReserve,
-                'Treasury: Seigniorage Allocation'
-            );
-            emit ContributionPoolFunded(now, fundReserve);
-        }
-
-        seigniorage = seigniorage.sub(fundReserve);
-
-        // ======================== BIP-4
-        uint256 treasuryReserve =
-            Math.min(
-                seigniorage,
-                IERC20(bond).totalSupply().sub(accumulatedSeigniorage)
-            );
-        if (treasuryReserve > 0) {
-            accumulatedSeigniorage = accumulatedSeigniorage.add(
-                treasuryReserve
-            );
-            emit TreasuryFunded(now, treasuryReserve);
-        }
-
         // boardroom
-        uint256 boardroomReserve = seigniorage.sub(treasuryReserve);
-        if (boardroomReserve > 0) {
-            IERC20(cash).safeApprove(boardroom, boardroomReserve);
-            IBoardroom(boardroom).allocateSeigniorage(boardroomReserve);
-            emit BoardroomFunded(now, boardroomReserve);
-        }
+        IERC20(cash).safeApprove(boardroom, seigniorage);
+        IBoardroom(boardroom).allocateSeigniorage(seigniorage);
+        emit BoardroomFunded(now, seigniorage);
     }
 
     /* ========== EVENTS ========== */
@@ -385,7 +339,6 @@ contract Treasury is ContractGuard, Epoch {
     // CORE
     event RedeemedBonds(address indexed from, uint256 amount);
     event BoughtBonds(address indexed from, uint256 amount);
-    event TreasuryFunded(uint256 timestamp, uint256 seigniorage);
     event BoardroomFunded(uint256 timestamp, uint256 seigniorage);
     event ContributionPoolFunded(uint256 timestamp, uint256 seigniorage);
 }
